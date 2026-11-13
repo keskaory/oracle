@@ -78,10 +78,11 @@ def long_date(d) -> str:
 
 
 def build_messages(q, mode: str, articles: pd.DataFrame | None = None) -> list[dict]:
-    today = q.snapshot
     rules = (q.description or "").strip()[:MAX_RULES_CHARS]
     if mode == "probe":
+        # the probe has no date, so it also works on the control markets, which have no snapshot
         return [{"role": "user", "content": PROBE.format(question=q.question, rules=rules)}]
+    today = q.snapshot
     headlines = NO_NEWS if mode == "no_news" else format_headlines(articles)
     days = max(0, round((q.end_scheduled - today).total_seconds() / 86400))
     return [{"role": "system", "content": SYSTEM.format(today=long_date(today))},

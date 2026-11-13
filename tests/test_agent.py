@@ -55,3 +55,10 @@ def test_empty_news_is_said_out_loud():
 def test_prompt_dates_come_from_snapshot():
     t = text(build_messages(question(), "no_news"))
     assert "March 3, 2025" in t and "28 days from today" in t
+
+
+def test_probe_works_without_snapshot():
+    # the pre-cutoff control markets come straight from the api and have no snapshot date
+    q = question()
+    del q.snapshot
+    assert "Will X happen" in text(build_messages(q, "probe"))

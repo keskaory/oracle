@@ -50,10 +50,15 @@ def run(questions: pd.DataFrame, mode: str, articles: pd.DataFrame | None = None
     return pd.DataFrame(rows)
 
 
-def save(df: pd.DataFrame, table: str = "forecasts") -> None:
-    con = duckdb.connect(str(DB))
+def save(df: pd.DataFrame, table: str = "forecasts", db=DB) -> None:
+    con = duckdb.connect(str(db))
     con.register("new_df", df)
     con.execute(f"create table if not exists {table} as select * from new_df where false")
+    # forecast and probe rows have different columns, and the table is created by whichever runs first
+    have = set(con.execute(f"select * from {table} limit 0").df().columns)
+    for name, dtype in con.execute("select column_name, column_type from (describe new_df)").fetchall():
+        if name not in have:
+            con.execute(f'alter table {table} add column "{name}" {dtype}')
     # replace earlier rows for the same question, mode, model and prompt version
     con.execute(f"""delete from {table} t using new_df n where t.market_id = n.market_id and t.mode = n.mode
                     and t.model = n.model and t.prompt_version = n.prompt_version""")
