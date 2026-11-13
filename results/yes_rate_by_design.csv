@@ -1,0 +1,7 @@
+sample,questions,n,yes_rate,se
+all sampled markets (what the snapshot design draws from),all questions,8000,0.25675,0.004884022899977026
+all sampled markets (what the snapshot design draws from),deadline ('by') questions,494,0.19838056680161945,0.017941973356610675
+old design: closed within 1 day of end date,all questions,5612,0.2644333570919458,0.005887220487272171
+old design: closed within 1 day of end date,deadline ('by') questions,205,0.1073170731707317,0.021617531162123105
+dropped by old design: closed early,all questions,2388,0.23869346733668342,0.008723341682635615
+dropped by old design: closed early,deadline ('by') questions,289,0.2629757785467128,0.02589702247680671
