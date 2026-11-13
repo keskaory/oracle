@@ -1,0 +1,7 @@
+#!/bin/sh
+# block any commit that stages files under private/ (backup for .gitignore, which `git add -f` can bypass)
+if git diff --cached --name-only | grep -q '^private/'; then
+  echo "pre-commit: refusing to commit files under private/:" >&2
+  git diff --cached --name-only | grep '^private/' >&2
+  exit 1
+fi

@@ -63,3 +63,23 @@ def test_local_cut_is_per_question():
                                       "20250303T000000Z", "20250310T000000Z"]]
     got = articles_for_question(arts, datetime(2025, 3, 3, tzinfo=timezone.utc))
     assert [a["seendate"] for a in got] == ["20250210T000000Z", "20250302T235900Z"]
+
+
+def test_strict_form_unquotes_short_words():
+    assert event_query("Visa earnings", [], strict=True) == "Visa"
+    # 'U.S' can't go in unquoted, so it's dropped rather than sent
+    assert event_query("Will the U.S and European Union agree?", [], strict=True) == '"European Union"'
+    assert event_query("Will the U.S and European Union agree?", []) == '("U.S" OR "European Union")'
+
+
+def test_split_has_no_overlap():
+    from news_sample import add_split
+    snaps = pd.date_range("2025-01-06", periods=100, freq="W-MON", tz="UTC")
+    s = pd.DataFrame({"market_id": [str(i) for i in range(100)], "snapshot": snaps,
+                      "closed_time": snaps + pd.Timedelta(days=20)})
+    s = add_split(s)
+    T = s.attrs["T"]
+    assert T.dayofweek == 0 and str(T.tz) == "UTC"
+    assert (s.loc[s["split"] == "train", "closed_time"] < T).all()
+    assert (s.loc[s["split"] == "test", "snapshot"] >= T).all()
+    assert s.loc[s["dev"], "split"].eq("train").all()

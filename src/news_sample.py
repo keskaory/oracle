@@ -34,7 +34,7 @@ MAX_RECORDS = 250    # gdelt's max per query
 STOP = set("""will what who which when where how does do did is are was be the a an in on by before after of at to
 for from with and or vs yes no top high low end monthly weekly daily price close hit reach win beat say post posts
 january february march april may june july august september october november december
-monday tuesday wednesday thursday friday saturday sunday q1 q2 q3 q4 inc corp ltd
+monday tuesday wednesday thursday friday saturday sunday q1 q2 q3 q4 inc corp ltd this that these those
 winner winners victory election elections legislative vote share turnout nominee nomination democratic republican
 primary exact score best chairman mainstream fc cf sc sk afc ssc acf fk cd ac""".split())
 CONNECT = {"of", "de", "del", "la", "&"}  # joins 'Bank of England', 'Brighton & Hove Albion' into one name
@@ -56,6 +56,28 @@ def sample_band(questions: pd.DataFrame, n: int = N_SAMPLE, seed: int = SEED) ->
         take[s] += 1
     parts = [band[band["stratum"] == s].sample(n=int(k), random_state=seed) for s, k in take.items() if k > 0]
     return pd.concat(parts).sort_values("snapshot").reset_index(drop=True)
+
+
+TRAIN_SHARE = 0.6  # phase 0: earlier ~60% trains, later ~40% tests
+N_DEV = 40         # train questions the prompt gets revised on. everything else is never looked at while tuning
+
+
+def add_split(sample: pd.DataFrame) -> pd.DataFrame:
+    """d28. T = the first monday at or after the 60th percentile snapshot.
+    train = resolved before T (outcome known at T), test = snapshot on or after T,
+    gap = asked before T but resolved after it. gap questions are left out of the combination fit
+    and the test, because their outcomes weren't known at T but their news predates it."""
+    s = sample.copy()
+    # duckdb hands timestamps back in local time; snapshots are mondays 00:00 utc, so work in utc
+    first = s["snapshot"].dt.tz_convert("UTC").quantile(TRAIN_SHARE).normalize()
+    T = next(d for d in pd.date_range(first, periods=7, freq="D") if d.dayofweek == 0)
+    s["split"] = "gap"
+    s.loc[s["closed_time"] < T, "split"] = "train"
+    s.loc[s["snapshot"] >= T, "split"] = "test"
+    dev = s[s["split"] == "train"].sample(n=N_DEV, random_state=SEED)["market_id"]
+    s["dev"] = s["market_id"].isin(dev)
+    s.attrs["T"] = T
+    return s
 
 
 # ---------- queries ----------
@@ -98,12 +120,22 @@ def fallback_terms(text: str) -> list[str]:
     return sorted(set(words), key=len, reverse=True)[:2]
 
 
-def event_query(event_title: str, questions: list[str]) -> str:
-    """one gdelt query per event. event title first so its names survive the MAX_TERMS cut."""
+def quote(term: str, strict: bool) -> str | None:
+    """gdelt rejects quoted phrases under 5 characters ("Visa", "U.S"). in strict mode short plain
+    words go in unquoted, which gdelt accepts, and short ones with punctuation are dropped."""
+    if not strict or len(term) >= 5:
+        return f'"{term}"'
+    return term if term.isalnum() and len(term) >= 3 else None
+
+
+def event_query(event_title: str, questions: list[str], strict: bool = False) -> str:
+    """one gdelt query per event. event title first so its names survive the MAX_TERMS cut.
+    strict=True is the retry form, used only for events whose first query gdelt rejected, so
+    queries that already worked keep their cache."""
     terms = merge_terms(key_terms(event_title or "") + [t for q in questions for t in key_terms(q)])
     if not terms:
         terms = fallback_terms(f"{event_title} {' '.join(questions)}")
-    quoted = [f'"{t}"' for t in terms]
+    quoted = [x for x in (quote(t, strict) for t in terms) if x]
     # gdelt only allows parentheses around OR'd terms, so a single term goes bare
     return quoted[0] if len(quoted) == 1 else "(" + " OR ".join(quoted) + ")"
 
@@ -114,10 +146,15 @@ def event_window(snapshots: pd.Series) -> tuple[datetime, datetime]:
 
 
 def query_plan(sample: pd.DataFrame) -> pd.DataFrame:
+    bad = load_bad()
     rows = []
     for event_id, g in sample.groupby("event_id"):
         start, end = event_window(g["snapshot"])
-        rows.append({"event_id": event_id, "query": event_query(g["event_title"].iloc[0], list(g["question"])),
+        args = (g["event_title"].iloc[0], list(g["question"]))
+        query = event_query(*args)
+        if rejected(event_id, query, bad):
+            query = event_query(*args, strict=True)  # first form was rejected, use the retry form
+        rows.append({"event_id": event_id, "query": query,
                      "start": start, "end": end, "n_questions": len(g)})
     return pd.DataFrame(rows)
 
@@ -168,17 +205,31 @@ def is_cached(params: dict) -> bool:
 
 
 def load_bad() -> dict:
-    return json.loads(BAD_QUERIES.read_text()) if BAD_QUERIES.exists() else {}
+    """event id -> {"rejected": [queries gdelt refused], "error": last message}."""
+    bad = json.loads(BAD_QUERIES.read_text()) if BAD_QUERIES.exists() else {}
+    for v in bad.values():
+        if "query" in v:  # older format had a single query
+            v["rejected"] = [v.pop("query")]
+    return bad
 
 
-def fetch_all(plan: pd.DataFrame) -> None:
+def rejected(event_id, query: str, bad: dict) -> bool:
+    return query in bad.get(str(event_id), {}).get("rejected", [])
+
+
+def fetch_all(sample: pd.DataFrame) -> None:
     """loop over unfetched events until all are done. ~20 s between requests, as in d21."""
     bad = load_bad()
     tries = ok = 0
     streak = 0
     while True:
+        plan = query_plan(sample)  # rebuilt each pass so rejected events get their retry form
         pending = [r for r in plan.itertuples(index=False)
-                   if str(r.event_id) not in bad and not is_cached(gdelt_params(r.query, r.start, r.end))]
+                   if not rejected(r.event_id, r.query, bad) and not is_cached(gdelt_params(r.query, r.start, r.end))]
+        # dev events first so prompt work can start, then train, then test
+        dev_events = set(sample.loc[sample["dev"], "event_id"])
+        train_events = set(sample.loc[sample["split"] == "train", "event_id"])
+        pending.sort(key=lambda r: (r.event_id not in dev_events, r.event_id not in train_events))
         print(f"{datetime.now():%m-%d %H:%M}  {len(pending)} events left", flush=True)
         if not pending:
             return
@@ -190,7 +241,9 @@ def fetch_all(plan: pd.DataFrame) -> None:
                 ok += 1
                 streak = 0
             elif status == "bad_query":
-                bad[str(r.event_id)] = {"query": r.query, "error": data}
+                entry = bad.setdefault(str(r.event_id), {"rejected": []})
+                entry["rejected"].append(r.query)
+                entry["error"] = data
                 BAD_QUERIES.write_text(json.dumps(bad, indent=1))
                 print(f"  bad query {r.query}: {data}", flush=True)
             else:
@@ -214,7 +267,7 @@ def assemble(sample: pd.DataFrame, plan: pd.DataFrame) -> tuple[pd.DataFrame, pd
     for q in sample.itertuples(index=False):
         p = by_event.loc[q.event_id]
         params = gdelt_params(p["query"], p["start"], p["end"])
-        if str(q.event_id) in bad:
+        if rejected(q.event_id, p["query"], bad):
             status, arts = "bad_query", []
         elif not is_cached(params):
             status, arts = "not_fetched", []
@@ -233,15 +286,16 @@ def assemble(sample: pd.DataFrame, plan: pd.DataFrame) -> tuple[pd.DataFrame, pd
 
 def main(cmd: str) -> None:
     con = duckdb.connect(str(DB))
-    sample = sample_band(con.execute("select * from questions").df())
+    sample = add_split(sample_band(con.execute("select * from questions").df()))
     plan = query_plan(sample)
     if cmd == "plan":
-        print(f"{len(sample)} questions, {len(plan)} events")
+        print(f"{len(sample)} questions, {len(plan)} events, T = {sample.attrs['T']}")
+        print(sample.groupby(["split", "dev"]).size().to_string())
         print(sample.groupby("stratum").size().to_string())
         print(plan[["n_questions", "query"]].head(40).to_string())
     elif cmd == "fetch":
         con.close()  # don't hold the db open for days
-        fetch_all(plan)
+        fetch_all(sample)
     elif cmd == "assemble":
         news, arts = assemble(sample, plan)
         for name, df in [("news_sample", news), ("news_articles", arts)]:
