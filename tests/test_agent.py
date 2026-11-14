@@ -62,3 +62,24 @@ def test_probe_works_without_snapshot():
     q = question()
     del q.snapshot
     assert "Will X happen" in text(build_messages(q, "probe"))
+
+
+def test_reasoning_has_a_max_length_in_the_schema():
+    # ollama turns the schema into a grammar; without maxLength a curly quote let v1 answers run forever
+    from agent import MAX_REASONING_CHARS, Forecast
+    assert Forecast.model_json_schema()["properties"]["reasoning"]["maxLength"] == MAX_REASONING_CHARS
+
+
+def test_repeat_limit_is_a_parse_failure_not_a_crash(tmp_path, monkeypatch):
+    import agent
+
+    class Reply:
+        status_code, text = 500, '{"error":"prediction aborted, token repeat limit reached"}'
+
+    calls = []
+    monkeypatch.setattr(agent, "cache_path", lambda url, payload: tmp_path / "c.json")
+    monkeypatch.setattr(agent.requests, "post", lambda *a, **k: calls.append(1) or Reply())
+    ans, meta = agent.chat([{"role": "user", "content": "x"}], agent.Forecast)
+    assert ans is None and "repeat limit" in meta["raw"]
+    assert len(calls) == 1  # not retried until something parses
+    assert agent.chat([{"role": "user", "content": "x"}], agent.Forecast)[0] is None and len(calls) == 1  # cached

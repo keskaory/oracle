@@ -19,14 +19,19 @@ from cache import cache_path
 
 OLLAMA = "http://localhost:11434/api/chat"
 MODEL = "gemma3:4b"
-PROMPT_VERSION = "v1"
+# v2 (the one revision, from the 40 dev questions): reasoning capped at 1,000 characters, and two lines on
+# off-topic and hyped headlines. see private notes, phase 2
+PROMPT_VERSION = "v2"
+MAX_REASONING_CHARS = 1000  # 95% of v1 answers were under 700; stops the curly-quote runaway
 MAX_HEADLINES = 15
 MAX_RULES_CHARS = 1500  # resolution text; 75% of descriptions are shorter than this
 OPTIONS = {"temperature": 0, "seed": 0, "num_ctx": 4096}
 
 
 class Forecast(BaseModel):
-    reasoning: str = Field(description="two to four sentences")
+    # in v1 the model sometimes closed this string with a curly quote, which the json grammar accepts as text,
+    # so it kept writing until the context was full. a max length makes the grammar end the string
+    reasoning: str = Field(description="two to four sentences", max_length=MAX_REASONING_CHARS)
     probability: float = Field(ge=0, le=1, description="probability the question resolves Yes")
 
 
@@ -49,8 +54,10 @@ Recent news headlines (newest first):
 {headlines}
 
 Estimate the probability that this question resolves Yes. Consider how often things like this happen, \
-how much time is left, and what the news says. Give your reasoning in two to four sentences, then the \
-probability as a number between 0 and 1."""
+how much time is left, and what the news says. Many headlines may be about something else: ignore any \
+that are not about this question. Excited or optimistic coverage is not evidence that something will \
+happen by the deadline. Give your reasoning in two to four sentences, then the probability as a number \
+between 0 and 1."""
 
 NO_NEWS = "(no news provided)"
 NONE_FOUND = "(no relevant news articles were found)"
@@ -100,9 +107,18 @@ def chat(messages: list[dict], schema: type[BaseModel]) -> tuple[BaseModel | Non
         data = json.loads(path.read_text())
     else:
         t0 = time.time()
-        r = requests.post(OLLAMA, json=payload, timeout=600)
-        r.raise_for_status()
-        data = r.json()
+        for attempt in range(3):
+            r = requests.post(OLLAMA, json=payload, timeout=600)
+            if r.status_code < 500 or "repeat limit" in r.text:
+                break
+            time.sleep(10)  # other 500s are retried so a long run doesn't die on a blip
+        if r.status_code >= 500 and "repeat limit" in r.text:
+            # ollama stopped the model because it was repeating itself. that's a degenerate answer, so it is
+            # recorded (and cached) as a parse failure, not retried until something parses
+            data = {"message": {"content": r.text}, "ollama_error": r.text}
+        else:
+            r.raise_for_status()
+            data = r.json()
         data["wall_seconds"] = time.time() - t0
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data))
