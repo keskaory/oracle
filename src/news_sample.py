@@ -22,6 +22,7 @@ from news import GDELT_PAUSE, GDELT_URL, parse_seendate
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "oracle.duckdb"
 BAD_QUERIES = ROOT / "data" / "news_bad_queries.json"
+BAD_JSON_DIR = ROOT / "data" / "news_bad_json"
 
 BAND = (0.10, 0.90)  # d17
 N_SAMPLE = 500
@@ -175,8 +176,24 @@ def articles_for_question(articles: list[dict], snapshot: datetime) -> list[dict
 
 # ---------- fetching ----------
 
+def read_gdelt(status_code: int, text: str) -> tuple[str, object]:
+    """sort one gdelt reply into ('ok', data), ('rate_limited', None), ('bad_json', text) or ('bad_query', message)."""
+    text = text.strip()
+    # rate limits come back as plain text (sometimes with a 200)
+    if status_code == 429 or text.lower().startswith("please limit") or not text:
+        return "rate_limited", None
+    if text.startswith("{"):
+        # a real result. gdelt sometimes puts raw control characters inside strings, which strict json refuses
+        try:
+            data = json.loads(text, strict=False)
+        except ValueError:
+            return "bad_json", text  # a result we can't read: retry later, never mark the query as rejected
+        return ("ok", data) if status_code == 200 else ("rate_limited", None)
+    return "bad_query", text[:200]  # any other text is gdelt rejecting the query
+
+
 def fetch_once(params: dict) -> tuple[str, object]:
-    """one try. returns ('ok', data), ('rate_limited', None) or ('bad_query', message).
+    """one try. returns ('ok', data), ('rate_limited', None), ('bad_json', text) or ('bad_query', message).
     separate from cache.get_json because here a rejected query must not be retried forever."""
     path = cache_path(GDELT_URL, params)
     if path.exists():
@@ -185,19 +202,11 @@ def fetch_once(params: dict) -> tuple[str, object]:
         r = requests.get(GDELT_URL, params=params, timeout=60)
     except requests.RequestException:
         return "rate_limited", None  # network blip: treat like a rate limit and come back later
-    try:
-        data = r.json()
-    except ValueError:
-        text = r.text.strip()
-        # rate limits come back as plain text with a 200; any other text is gdelt rejecting the query
-        if r.status_code == 429 or text.lower().startswith("please limit") or not text:
-            return "rate_limited", None
-        return "bad_query", text[:200]
-    if r.status_code != 200:
-        return "rate_limited", None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data))
-    return "ok", data
+    status, data = read_gdelt(r.status_code, r.text)
+    if status == "ok":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data))
+    return status, data
 
 
 def is_cached(params: dict) -> bool:
@@ -223,7 +232,9 @@ def fetch_all(sample: pd.DataFrame) -> None:
     tries = ok = 0
     streak = 0
     while True:
-        plan = query_plan(sample)  # rebuilt each pass so rejected events get their retry form
+        # rebuilt every 25 tries (not once per pass): rejected events get their retry form, and refused
+        # dev events go back to the front instead of waiting hours for the next full pass
+        plan = query_plan(sample)
         pending = [r for r in plan.itertuples(index=False)
                    if not rejected(r.event_id, r.query, bad) and not is_cached(gdelt_params(r.query, r.start, r.end))]
         # dev events first so prompt work can start, then train, then test
@@ -246,6 +257,11 @@ def fetch_all(sample: pd.DataFrame) -> None:
                 entry["error"] = data
                 BAD_QUERIES.write_text(json.dumps(bad, indent=1))
                 print(f"  bad query {r.query}: {data}", flush=True)
+            elif status == "bad_json":
+                # keep the reply so it can be looked at; the event stays pending and is tried again
+                BAD_JSON_DIR.mkdir(parents=True, exist_ok=True)
+                (BAD_JSON_DIR / f"{r.event_id}.txt").write_text(data, encoding="utf-8")
+                print(f"  unreadable json for {r.query}, saved, will retry", flush=True)
             else:
                 streak += 1
                 if streak >= 30:
@@ -255,6 +271,7 @@ def fetch_all(sample: pd.DataFrame) -> None:
                     streak = 0
             if tries % 25 == 0:
                 print(f"{datetime.now():%m-%d %H:%M}  tries {tries}  ok {ok}  ({ok / tries:.0%})", flush=True)
+                break
 
 
 # ---------- assembling ----------

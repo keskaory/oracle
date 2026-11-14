@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from news_sample import articles_for_question, event_query, event_window, key_terms, merge_terms, sample_band
+from news_sample import articles_for_question, event_query, event_window, key_terms, merge_terms, read_gdelt, sample_band
 
 
 def fake_questions(n_per_quarter: dict[str, int]) -> pd.DataFrame:
@@ -83,3 +83,16 @@ def test_split_has_no_overlap():
     assert (s.loc[s["split"] == "train", "closed_time"] < T).all()
     assert (s.loc[s["split"] == "test", "snapshot"] >= T).all()
     assert s.loc[s["dev"], "split"].eq("train").all()
+
+
+def test_read_gdelt_sorts_replies():
+    ok = '{"articles": [{"title": "a"}]}'
+    assert read_gdelt(200, ok) == ("ok", {"articles": [{"title": "a"}]})
+    # a raw tab inside a title broke strict parsing, and the result was wrongly marked as a rejected query
+    assert read_gdelt(200, '{"articles": [{"title": "a\tb"}]}')[0] == "ok"
+    # unreadable but clearly a result: retry, never reject the query
+    assert read_gdelt(200, '{"articles": [ {"title": "a"')[0] == "bad_json"
+    assert read_gdelt(429, "anything") == ("rate_limited", None)
+    assert read_gdelt(200, "Please limit requests to one every 5 seconds") == ("rate_limited", None)
+    assert read_gdelt(200, "") == ("rate_limited", None)
+    assert read_gdelt(200, "The specified phrase is too short.") == ("bad_query", "The specified phrase is too short.")
