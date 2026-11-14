@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from news_sample import articles_for_question, event_query, event_window, key_terms, merge_terms, read_gdelt, sample_band
+from news_sample import articles_for_question, event_query, event_window, fallback_terms, key_terms, merge_terms, read_gdelt, sample_band
 
 
 def fake_questions(n_per_quarter: dict[str, int]) -> pd.DataFrame:
@@ -96,3 +96,13 @@ def test_read_gdelt_sorts_replies():
     assert read_gdelt(200, "Please limit requests to one every 5 seconds") == ("rate_limited", None)
     assert read_gdelt(200, "") == ("rate_limited", None)
     assert read_gdelt(200, "The specified phrase is too short.") == ("bad_query", "The specified phrase is too short.")
+
+
+def test_fallback_terms_same_in_every_process():
+    import subprocess
+    code = "from news_sample import fallback_terms; print(fallback_terms('how many jobs were added'))"
+    src = str(Path(__file__).resolve().parent.parent / "src")
+    outs = {subprocess.run([sys.executable, "-c", code], cwd=src, capture_output=True, text=True,
+                           env={**__import__("os").environ, "PYTHONHASHSEED": str(seed)}).stdout for seed in range(6)}
+    assert outs == {"['added', 'jobs']\n"}
+    assert fallback_terms("how many jobs were added") == ["added", "jobs"]

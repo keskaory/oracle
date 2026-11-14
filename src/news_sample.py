@@ -118,7 +118,9 @@ def merge_terms(terms: list[str], max_terms: int = MAX_TERMS) -> list[str]:
 def fallback_terms(text: str) -> list[str]:
     """no capitalized names at all (rare): use the two longest ordinary words."""
     words = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", text) if w.lower() not in STOP]
-    return sorted(set(words), key=len, reverse=True)[:2]
+    # ties broken alphabetically: set order changes between python processes, which once gave one event
+    # two different queries (so assemble looked for a cache entry the fetcher never made)
+    return sorted(set(words), key=lambda w: (-len(w), w))[:2]
 
 
 def quote(term: str, strict: bool) -> str | None:
