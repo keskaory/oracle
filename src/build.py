@@ -55,7 +55,7 @@ def main() -> None:
     for name, df in [("markets", markets), ("sampled", sampled), ("questions", questions)]:
         con.register(f"{name}_df", df)
         con.execute(f"create or replace table {name} as select * from {name}_df")
-        assert con.execute(f"select count(*) from {name}").fetchone()[0] == len(df), f"{name} write mismatch"
+        assert con.execute(f"select count(*) from {name}").fetchall()[0][0] == len(df), f"{name} write mismatch"
     print(con.execute("select count(*), avg(outcome), min(snapshot), max(snapshot) from questions").fetchall())
 
 

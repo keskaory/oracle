@@ -301,7 +301,7 @@ def main(cmd: str) -> None:
         for name, df in [("news_sample", news), ("news_articles", arts)]:
             con.register(f"{name}_df", df)
             con.execute(f"create or replace table {name} as select * from {name}_df")
-            assert con.execute(f"select count(*) from {name}").fetchone()[0] == len(df), f"{name} write mismatch"
+            assert con.execute(f"select count(*) from {name}").fetchall()[0][0] == len(df), f"{name} write mismatch"
         print(news["news_status"].value_counts().to_string())
         got = news[news["news_status"].isin(["ok", "no_news"])]
         if len(got):
