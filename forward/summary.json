@@ -1,0 +1,9 @@
+{
+  "weeks": 1,
+  "forecasts": 30,
+  "status": {
+    "open": 30
+  },
+  "resolved_with_forecast": 0,
+  "events": 0
+}

@@ -101,16 +101,17 @@ TRADES = "https://data-api.polymarket.com/v2/trades"
 MAX_TRADE_PAGES = 100  # 100k trades. past this we stop and flag the market rather than page forever
 
 
-def trades_back_to(condition_id: str, back_to: pd.Timestamp) -> tuple[pd.DataFrame, bool]:
+def trades_back_to(condition_id: str, back_to: pd.Timestamp, asof: str = "") -> tuple[pd.DataFrame, bool]:
     """real fills for one market, newest first, paging back until we pass `back_to`.
     the api only filters by time for single wallets, so for a market we have to walk backwards.
-    returns (trades, complete). complete=False means we hit the page cap before reaching back_to."""
+    returns (trades, complete). complete=False means we hit the page cap before reaching back_to.
+    asof: for an open market (phase 4), so this week's trades aren't served from last week's cache."""
     rows, cursor = [], None
     for _ in range(MAX_TRADE_PAGES):
         params = {"condition": condition_id, "limit": 1000}
         if cursor:
             params["cursor"] = cursor
-        page = get_json(TRADES, params, pause=0.1)
+        page = get_json(TRADES, params, pause=0.1, asof=asof)
         rows += page.get("data") or []
         cursor = (page.get("pagination") or {}).get("next_cursor")
         if not cursor or (rows and rows[-1]["timestamp"] < back_to.timestamp()):

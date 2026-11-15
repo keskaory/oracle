@@ -120,6 +120,12 @@ def combination_coefs(fit: pd.DataFrame, reps: int = SUB_REPS) -> dict:
     return {"a": a, "b": b, "c": c, "b_ci": ci(boot[:, 1]), "c_ci": ci(boot[:, 2])}
 
 
+def recal_coefs(fit: pd.DataFrame) -> dict:
+    """logit(p) = a + b*logit(market). saved so the forward test (phase 4) can apply the same frozen fit."""
+    m = LogisticRegression(C=1e6).fit(features(fit, ["market_p"]), fit["outcome"])
+    return {"a": float(m.intercept_[0]), "b": float(m.coef_[0][0])}
+
+
 def event_resamples(d: pd.DataFrame, reps: int, seed: int):
     # same scheme as scoring.cluster_bootstrap, but yields row positions so a stat can return several numbers
     rng = np.random.default_rng(seed)
@@ -245,6 +251,7 @@ def main(open_test: bool) -> None:
         "n": len(d), "n_events": int(d["event_id"].nunique()), "yes_rate": float(d["outcome"].mean()),
         "n_without_agent_answer": int(len(scored_all) - len(d)),
         "combination_fit_on_train": combination_coefs(fit),
+        "market_recal_fit_on_train": recal_coefs(fit),
         "murphy": {name: murphy(p[name], d["outcome"]) for name in rel},
         "power_at_test_size": power(fit, int((s["split"] == "test").sum())),
         "scores": scores.to_dict("records"), "secondary_arms": arms.to_dict("records"),
