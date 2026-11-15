@@ -83,3 +83,66 @@ def test_repeat_limit_is_a_parse_failure_not_a_crash(tmp_path, monkeypatch):
     assert ans is None and "repeat limit" in meta["raw"]
     assert len(calls) == 1  # not retried until something parses
     assert agent.chat([{"role": "user", "content": "x"}], agent.Forecast)[0] is None and len(calls) == 1  # cached
+
+
+def test_pick_numbers_match_what_the_model_sees():
+    import agent
+    cands = agent.pick_candidates(arts(5))
+    shown = agent.pick_messages(question(), cands)[0]["content"]
+    assert "1. " in shown and "5. " in shown and "6. " not in shown
+    # 1-based, out-of-range and repeated numbers are handled, the order of the answer doesn't matter
+    assert list(agent.picked(cands, [3, 1, 3, 99, 0]).title) == ["headline 0", "headline 2"]
+    assert agent.picked(cands, []).empty
+
+
+def test_news_pick_mode(monkeypatch):
+    import agent
+    seen = []
+
+    def fake_chat(messages, schema):
+        seen.append(schema)
+        meta = {"wall_seconds": 1.0, "prompt_tokens": 10, "output_tokens": 5, "raw": "x"}
+        if schema is agent.PICK_SCHEMAS[agent.PICK_VERSION]:
+            return answers["pick"], meta
+        return agent.Forecast(reasoning="r", probability=0.3), {**meta, "messages": messages}
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    # the model picks headline 2 only, so the forecast prompt shows that one and not the others
+    answers = {"pick": agent.PickTop(relevant=[2])}
+    row = agent.forecast(question(), "news_pick", arts(5))
+    assert row["parsed"] and row["agent_p"] == 0.3 and row["n_candidates"] == 5 and row["n_picked"] == 1
+    # a failed pick means no forecast at all, never a silent "no news" forecast
+    seen.clear()
+    answers = {"pick": None}
+    row = agent.forecast(question(), "news_pick", arts(5))
+    assert not row["parsed"] and row["agent_p"] is None and seen == [agent.PickTop]
+    # no articles at all: no pick call, the forecast says no news was found
+    seen.clear()
+    row = agent.forecast(question(), "news_pick", arts(0))
+    assert seen == [agent.Forecast] and row["n_picked"] == 0
+
+
+def test_picked_headlines_are_the_ones_shown():
+    import agent
+    cands = agent.pick_candidates(arts(5))
+    msgs = agent.build_messages(question(), "news_pick", agent.picked(cands, [2]))
+    body = text(msgs)
+    assert "headline 1" in body and "headline 0" not in body and "headline 2" not in body
+
+
+def test_p1_prompt_unchanged():
+    # p1 results are reported, so its exact text must stay rerunnable from the cache
+    import agent
+    assert agent.PICK_PROMPTS["p1"].endswith("If none do, give an empty list.")
+    assert agent.PickTop.model_json_schema()["properties"]["relevant"]["maxItems"] == 15
+
+
+def test_news_pick_without_an_article_table(monkeypatch):
+    # run_agent always passes a (maybe empty) table, but a None must not crash
+    import agent
+    monkeypatch.setattr(agent, "chat", lambda m, s: (agent.Forecast(reasoning="r", probability=0.2),
+                                                     {"wall_seconds": 1, "prompt_tokens": 1, "output_tokens": 1,
+                                                      "raw": "x"}))
+    row = agent.forecast(question(), "news_pick", None)
+    assert row["parsed"] and row["n_candidates"] == 0 and row["n_picked"] == 0
+    assert agent.NONE_FOUND in text(agent.build_messages(question(), "news_pick", None))

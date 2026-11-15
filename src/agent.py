@@ -1,9 +1,11 @@
-"""the forecasting agent: gemma 3 4b via ollama, reading headlines from before the snapshot date.
+"""the forecasting agent: gemma 3 via ollama (4b baseline, 12b from d32), reading headlines from before
+the snapshot date. the model is set with --model in run_agent.py.
 
-three modes, all on the same questions:
-  news     question + resolution rules + up to 15 headlines from [D - 30 days, D)
-  no_news  the same prompt with the headlines left out, so the difference is what the news adds
-  probe    the leakage probe: "do you already know how this resolved?" (phase 0)
+modes, all on the same questions:
+  news       question + resolution rules + up to 15 headlines from [D - 30 days, D)
+  news_pick  the model first picks up to 15 of the top 50 headlines (d32, d33), then forecasts from those
+  no_news    the same prompt with the headlines left out, so the difference is what the news adds
+  probe      the leakage probe: "do you already know how this resolved?" (phase 0)
 the market price is never shown to the model. the agent has to be an independent second opinion,
 or the combination model in phase 3 can't tell the two apart.
 """
@@ -62,6 +64,44 @@ between 0 and 1."""
 NO_NEWS = "(no news provided)"
 NONE_FOUND = "(no relevant news articles were found)"
 
+# d32: in the news_pick mode the model first picks which headlines are about the question, then forecasts
+PICK_CANDIDATES = 50
+
+
+class Pick(BaseModel):  # p1
+    relevant: list[int] = Field(description="numbers of the headlines that are about this question",
+                                max_length=PICK_CANDIDATES)
+
+
+class PickTop(BaseModel):  # p2
+    relevant: list[int] = Field(description="numbers of the most useful headlines, at most 15",
+                                max_length=MAX_HEADLINES)
+
+
+PICK_HEAD = """Question: {question}
+
+Resolution rules: {rules}
+
+Headlines:
+{headlines}
+
+"""
+# both versions are kept so every reported result can be rerun from the cache
+PICK_PROMPTS = {
+    # p1: on dev it kept a median of 27 of 50 (all 50 once), so the forecast's top-15 cut did the choosing, not the model
+    "p1": PICK_HEAD + """Which of these headlines are about this question? A headline counts only if it is about the \
+same people, team, company or event that the question is about, in the sense the question means (a football club, \
+not the city it is named after; a company's stock, not its products). List the numbers of the headlines that \
+count. If none do, give an empty list.""",
+    # p2 (d33, the one revision): the model has to choose its 15 most useful, so its choice decides what is shown
+    "p2": PICK_HEAD + """Which of these headlines would help someone predict the answer to this question? A headline \
+counts only if it is about the same people, team, company or event that the question is about, in the sense the \
+question means (a football club, not the city it is named after; a company's stock, not its products). Pick at \
+most 15. If none would help, give an empty list.""",
+}
+PICK_SCHEMAS = {"p1": Pick, "p2": PickTop}
+PICK_VERSION = "p2"
+
 PROBE = """Question: {question}
 
 Resolution rules: {rules}
@@ -72,11 +112,29 @@ not if you could guess it. If you know, give the outcome ("Yes" or "No"). If not
 
 def format_headlines(articles: pd.DataFrame) -> str:
     """top headlines by gdelt's relevance rank, shown newest first, duplicates (syndicated copies) removed."""
-    if articles.empty:
+    if articles is None or articles.empty:
         return NONE_FOUND
     a = articles.sort_values("rank").drop_duplicates("title").head(MAX_HEADLINES)
     a = a.sort_values("seendate", ascending=False)
     return "\n".join(f"- {r.seendate:%Y-%m-%d} | {r.domain} | {r.title.strip()}" for r in a.itertuples())
+
+
+def pick_candidates(articles: pd.DataFrame) -> pd.DataFrame:
+    """the headlines the model chooses from: top PICK_CANDIDATES by gdelt rank, syndicated copies removed."""
+    return articles.sort_values("rank").drop_duplicates("title").head(PICK_CANDIDATES).reset_index(drop=True)
+
+
+def pick_messages(q, candidates: pd.DataFrame, version: str = PICK_VERSION) -> list[dict]:
+    rules = (q.description or "").strip()[:MAX_RULES_CHARS]
+    lines = "\n".join(f"{i}. {r.seendate:%Y-%m-%d} | {r.domain} | {r.title.strip()}"
+                      for i, r in enumerate(candidates.itertuples(), 1))
+    return [{"role": "user", "content": PICK_PROMPTS[version].format(question=q.question, rules=rules, headlines=lines)}]
+
+
+def picked(candidates: pd.DataFrame, numbers: list[int]) -> pd.DataFrame:
+    """the chosen rows. numbers are 1-based as shown; ones outside the list are ignored, repeats count once."""
+    keep = sorted({n - 1 for n in numbers if 1 <= n <= len(candidates)})
+    return candidates.iloc[keep]
 
 
 def long_date(d) -> str:
@@ -131,10 +189,26 @@ def chat(messages: list[dict], schema: type[BaseModel]) -> tuple[BaseModel | Non
 
 
 def forecast(q, mode: str, articles: pd.DataFrame | None = None) -> dict:
+    row = {"market_id": q.market_id, "mode": mode, "model": MODEL, "prompt_version": PROMPT_VERSION}
+    if mode == "news_pick":
+        row["prompt_version"] = f"{PROMPT_VERSION}+{PICK_VERSION}"  # forecast prompt + pick prompt
+        # step 1: the model picks the relevant headlines. if that step fails, there is no forecast:
+        # showing "no news" instead would quietly turn a failure into a different kind of answer
+        cands = pick_candidates(articles) if articles is not None else pd.DataFrame()
+        row["n_candidates"] = len(cands)
+        if len(cands):
+            pick, pmeta = chat(pick_messages(q, cands), PICK_SCHEMAS[PICK_VERSION])
+            row.update(pick_parsed=pick is not None, pick_seconds=pmeta["wall_seconds"],
+                       pick_prompt_tokens=pmeta["prompt_tokens"], pick_output_tokens=pmeta["output_tokens"])
+            if pick is None:
+                row.update(parsed=False, agent_p=None, reasoning="headline pick failed: " + pmeta["raw"][:500],
+                           created=datetime.now().isoformat(timespec="seconds"))
+                return row
+            articles = picked(cands, pick.relevant)
+        row["n_picked"] = len(articles) if articles is not None else 0
     schema = Probe if mode == "probe" else Forecast
     ans, meta = chat(build_messages(q, mode, articles), schema)
-    row = {"market_id": q.market_id, "mode": mode, "model": MODEL, "prompt_version": PROMPT_VERSION,
-           "parsed": ans is not None, **{k: meta[k] for k in ("wall_seconds", "prompt_tokens", "output_tokens")}}
+    row.update(parsed=ans is not None, **{k: meta[k] for k in ("wall_seconds", "prompt_tokens", "output_tokens")})
     if mode == "probe":
         row.update(knows_outcome=ans.knows_outcome if ans else None, claimed_outcome=ans.outcome if ans else None)
     else:

@@ -1,6 +1,6 @@
 """run the agent over the news sample and store forecasts in duckdb.
 
-usage: python run_agent.py no_news | probe | control | news [--dev]
+usage: python run_agent.py no_news | probe | control | news | news_pick [--dev] [--model gemma3:12b]
 everything is cached per prompt, so a rerun after a crash only redoes what's missing.
 results are collected in memory and written at the end, so the fetcher and this never fight over the db.
 """
@@ -63,14 +63,14 @@ def save(df: pd.DataFrame, table: str = "forecasts", db=DB) -> None:
     con.execute(f"""delete from {table} t using new_df n where t.market_id = n.market_id and t.mode = n.mode
                     and t.model = n.model and t.prompt_version = n.prompt_version""")
     con.execute(f"insert into {table} by name select * from new_df")
-    print(con.execute(f"select mode, prompt_version, count(*), avg(parsed::int) from {table} group by all order by all").df())
+    print(con.execute(f"select model, mode, prompt_version, count(*), avg(parsed::int) from {table} group by all order by all").df())
 
 
 def main(mode: str, dev_only: bool) -> None:
     con = duckdb.connect(str(DB), read_only=True)
     sample = load_sample(con)
     articles = None
-    if mode == "news":
+    if mode in ("news", "news_pick"):
         # only questions whose gdelt fetch is done (assembled by `make news`)
         status = con.execute("select market_id, news_status from news_sample").df()
         done = status.loc[status["news_status"].isin(["ok", "no_news"]), "market_id"]
@@ -89,4 +89,6 @@ def main(mode: str, dev_only: bool) -> None:
 
 
 if __name__ == "__main__":
+    if "--model" in sys.argv:
+        agent.MODEL = sys.argv[sys.argv.index("--model") + 1]  # d32: the 12b runs next to the 4b baseline
     main(sys.argv[1], "--dev" in sys.argv)
