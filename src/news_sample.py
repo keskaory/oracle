@@ -16,7 +16,7 @@ import duckdb
 import pandas as pd
 import requests
 
-from cache import cache_path
+from cache import cache_path, refuse_if_offline
 from news import GDELT_PAUSE, GDELT_URL, parse_seendate
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -200,6 +200,7 @@ def fetch_once(params: dict) -> tuple[str, object]:
     path = cache_path(GDELT_URL, params)
     if path.exists():
         return "ok", json.loads(path.read_text())
+    refuse_if_offline(GDELT_URL)
     try:
         r = requests.get(GDELT_URL, params=params, timeout=60)
     except requests.RequestException:

@@ -1,0 +1,13 @@
+model,mode,prompt_version,questions,parsed,tokens_in,tokens_out,laptop_hours,hosted_usd
+gemma3:12b,news_pick,v2+p1,40,39,117604,8109,0.5,0.007
+gemma3:12b,news_pick,v2+p2,499,496,1488650,83959,5.39,0.087
+gemma3:12b,no_news,v2,500,500,217731,50146,2.41,0.018
+gemma3:12b,probe,v2,500,500,154049,7703,0.78,0.009
+gemma3:12b,probe_control,v2,100,100,22124,1510,0.15,0.001
+gemma3:4b,news,v1,40,29,35845,38329,0.24,0.006
+gemma3:4b,news,v2,499,493,465911,103248,0.99,0.034
+gemma3:4b,no_news,v1,500,495,201731,84812,0.82,0.019
+gemma3:4b,no_news,v2,500,499,217200,69052,0.7,0.018
+gemma3:4b,probe,v1,500,500,154049,7585,0.38,0.008
+gemma3:4b,probe_control,v1,100,100,22124,1500,0.07,0.001
+total,,,3778,3751,3097018,455953,12.44,0.208

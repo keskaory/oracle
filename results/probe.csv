@@ -1,0 +1,5 @@
+model,set,n,says_knows,gives_yes_no,accuracy_of_claims,n_claims
+gemma3:12b,after the cutoff (train),276,0.091,0.091,0.72,25
+gemma3:12b,before the cutoff (control),100,0.56,0.56,0.643,56
+gemma3:4b,after the cutoff (train),276,1.0,0.96,0.442,265
+gemma3:4b,before the cutoff (control),100,1.0,1.0,0.38,100

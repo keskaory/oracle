@@ -8,8 +8,10 @@ else
   KEEP_AWAKE = caffeinate -i
 endif
 
-# everything reads from data/cache, so a rerun with a full cache makes no network calls
-all: test data market
+# everything reads from data/cache. rerun.py runs every step with the network switched off, so a cache
+# miss fails instead of quietly making a new call
+all:
+	cd src && $(PY) -u rerun.py
 
 test:
 	cd src && $(PY) -m pytest -q ../tests

@@ -1,11 +1,19 @@
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
 import requests
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "cache"
+# rerun.py sets this: a reproduction must come from the cache, so a cache miss is an error, not a new call
+OFFLINE = os.environ.get("ORACLE_OFFLINE") == "1"
+
+
+def refuse_if_offline(url: str) -> None:
+    if OFFLINE:
+        raise RuntimeError(f"cache miss while offline (ORACLE_OFFLINE=1): {url}")
 
 
 def cache_path(url: str, params: dict | None, asof: str = "") -> Path:
@@ -21,6 +29,7 @@ def get_json(url: str, params: dict | None = None, pause: float = 0.0, retries: 
     path = cache_path(url, params, asof)
     if path.exists():
         return json.loads(path.read_text())
+    refuse_if_offline(url)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     wait = max(pause, 1.0)

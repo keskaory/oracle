@@ -17,7 +17,7 @@ import pandas as pd
 import requests
 from pydantic import BaseModel, Field, ValidationError
 
-from cache import cache_path
+from cache import cache_path, refuse_if_offline
 
 OLLAMA = "http://localhost:11434/api/chat"
 MODEL = "gemma3:4b"
@@ -164,6 +164,7 @@ def chat(messages: list[dict], schema: type[BaseModel]) -> tuple[BaseModel | Non
     if path.exists():
         data = json.loads(path.read_text())
     else:
+        refuse_if_offline(OLLAMA)
         t0 = time.time()
         for attempt in range(3):
             r = requests.post(OLLAMA, json=payload, timeout=600)
