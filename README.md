@@ -6,6 +6,8 @@ The short version: the market wins clearly, and adding the model to the market d
 
 Everything here ran for $0: free public APIs, free news, and an open model on my own laptop.
 
+**Dashboard:** [oracle-mzsbdp3dzb2j48c9pqjfhv.streamlit.app](https://oracle-mzsbdp3dzb2j48c9pqjfhv.streamlit.app). It has the results, the calibration plots, every forecast with the model's reasoning, and the live forward test.
+
 ## the result
 
 <!-- auto:headline -->
